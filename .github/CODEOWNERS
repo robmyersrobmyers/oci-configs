@@ -1,0 +1,9 @@
+# CODEOWNERS — requires a review from the listed owner(s) before any matching
+# file can be merged into a protected branch.
+#
+# Workflow files are the highest-risk surface for supply-chain attacks: a
+# compromised workflow can exfiltrate secrets or push malicious releases.
+# Requiring explicit owner sign-off on every workflow change closes that vector.
+.github/workflows/ @robmyersrobmyers
+.github/CODEOWNERS  @robmyersrobmyers
+.goreleaser.yaml    @robmyersrobmyers

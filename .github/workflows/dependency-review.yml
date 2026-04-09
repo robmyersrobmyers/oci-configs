@@ -1,0 +1,36 @@
+name: Dependency review
+
+# Runs on every pull request and blocks merge if the diff introduces a
+# dependency with a known vulnerability (CVE) or an incompatible license.
+# Requires the repository to have the Dependency graph feature enabled
+# (Settings → Security → Dependency graph).
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pull-requests: write  # required to post the inline PR comment summary
+  id-token: none
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48  # v4.9.0
+        with:
+          # Fail the check if any newly introduced dependency has a CVE with
+          # CVSS score >= 7.0 (high or critical).
+          fail-on-severity: high
+          # Allowed licenses — adjust to match your project's license policy.
+          # See https://spdx.org/licenses/ for identifiers.
+          allow-licenses: >-
+            Apache-2.0,
+            BSD-2-Clause,
+            BSD-3-Clause,
+            ISC,
+            MIT,
+            MPL-2.0

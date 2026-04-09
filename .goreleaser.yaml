@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: oci-configs
+before:
+  hooks:
+    - go mod tidy
+
+# Used for local snapshot builds and the CI compile check
+# (goreleaser build --snapshot --single-target --clean). Releases are produced by
+# release.yml using plain go build + gh release create.
+builds:
+  - id: oci-configs
+    main: ./cmd/oci-configs
+    binary: oci-configs
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
