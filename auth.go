@@ -20,20 +20,26 @@ func buildCredentialFunc(cfg Config) auth.CredentialFunc {
 	// Priority 1: explicit credentials from functional options.
 	if cfg.username != "" || cfg.password != "" {
 		cred := auth.Credential{Username: cfg.username, Password: cfg.password}
+
 		return staticCredential(cfg.Registry, cred)
 	}
+
 	if cfg.token != "" {
 		cred := auth.Credential{AccessToken: cfg.token}
+
 		return staticCredential(cfg.Registry, cred)
 	}
 
 	// Priority 2: environment variables.
 	if username := os.Getenv(EnvUsername); username != "" {
 		cred := auth.Credential{Username: username, Password: os.Getenv(EnvPassword)}
+
 		return staticCredential(cfg.Registry, cred)
 	}
+
 	if token := os.Getenv(EnvToken); token != "" {
 		cred := auth.Credential{AccessToken: token}
+
 		return staticCredential(cfg.Registry, cred)
 	}
 
@@ -56,6 +62,7 @@ func staticCredential(registry string, cred auth.Credential) auth.CredentialFunc
 		if hostport == registry {
 			return cred, nil
 		}
+
 		return auth.EmptyCredential, nil
 	}
 }

@@ -28,6 +28,7 @@ func ExampleNew() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	if err := client.Prefetch(context.Background()); err != nil && !errors.Is(err, ociconfigs.ErrStaleCacheUsed) {
@@ -44,6 +45,7 @@ func ExampleFromEnv() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	if err := client.Prefetch(context.Background()); err != nil && !errors.Is(err, ociconfigs.ErrStaleCacheUsed) {
@@ -64,9 +66,11 @@ func ExampleClient_Prefetch() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	err = client.Prefetch(context.Background())
+
 	switch {
 	case err == nil:
 		// Cache is up to date.
@@ -91,12 +95,14 @@ func ExampleClient_Get() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	rc, err := client.Get(context.Background(), "schema")
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = rc.Close() }()
 
 	_, err = io.Copy(os.Stdout, rc)
@@ -117,6 +123,7 @@ func ExampleClient_CacheInfo() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	status, err := client.CacheInfo()
@@ -128,6 +135,7 @@ func ExampleClient_CacheInfo() {
 	fmt.Printf("digest:    %s\n", status.Digest)
 	fmt.Printf("cached at: %s\n", status.CachedAt.Format(time.RFC3339))
 	fmt.Printf("fresh:     %v\n", status.Fresh)
+
 	for _, f := range status.Files {
 		fmt.Printf("  %-30s %d bytes\n", f.Name, f.Size)
 	}
@@ -161,6 +169,7 @@ func ExampleWithProgress() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	_ = client.Prefetch(context.Background())
@@ -185,6 +194,7 @@ func ExampleWithLogger() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	_ = client.Prefetch(context.Background())
@@ -206,6 +216,7 @@ func ExampleWithOverride() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = client.Close() }()
 
 	// Get("schema") opens /path/to/local/schema.gql instead of the cache.
@@ -213,5 +224,6 @@ func ExampleWithOverride() {
 	if err != nil {
 		return
 	}
+
 	defer func() { _ = rc.Close() }()
 }

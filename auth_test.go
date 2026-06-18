@@ -6,6 +6,8 @@ import (
 )
 
 func TestBuildCredentialFuncExplicitCredentials(t *testing.T) {
+	t.Parallel()
+
 	cfg := Config{
 		Registry: "registry.example.com",
 		username: "alice",
@@ -17,12 +19,15 @@ func TestBuildCredentialFuncExplicitCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.Username != "alice" || cred.Password != "s3cret" {
 		t.Fatalf("got username=%q password=%q", cred.Username, cred.Password)
 	}
 }
 
 func TestBuildCredentialFuncExplicitToken(t *testing.T) {
+	t.Parallel()
+
 	cfg := Config{
 		Registry: "registry.example.com",
 		token:    "tok-abc123",
@@ -33,6 +38,7 @@ func TestBuildCredentialFuncExplicitToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.AccessToken != "tok-abc123" {
 		t.Fatalf("got access token %q", cred.AccessToken)
 	}
@@ -51,6 +57,7 @@ func TestBuildCredentialFuncEnvUsername(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.Username != "envuser" || cred.Password != "envpass" {
 		t.Fatalf("got username=%q password=%q", cred.Username, cred.Password)
 	}
@@ -67,6 +74,7 @@ func TestBuildCredentialFuncEnvToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.AccessToken != "env-token-xyz" {
 		t.Fatalf("got access token %q", cred.AccessToken)
 	}
@@ -88,12 +96,15 @@ func TestBuildCredentialFuncExplicitBeatsEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.Username != "explicit" {
 		t.Fatalf("expected explicit credentials, got username=%q", cred.Username)
 	}
 }
 
 func TestBuildCredentialFuncWrongRegistry(t *testing.T) {
+	t.Parallel()
+
 	cfg := Config{
 		Registry: "registry.example.com",
 		username: "alice",
@@ -105,6 +116,7 @@ func TestBuildCredentialFuncWrongRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cred.Username != "" || cred.Password != "" || cred.AccessToken != "" {
 		t.Fatalf("expected empty credential for non-matching registry, got %+v", cred)
 	}

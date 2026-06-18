@@ -1,3 +1,6 @@
+// Package ociconfigs manages application configuration files stored in OCI
+// artifact registries, with a persistent local disk cache and optional
+// signature verification.
 package ociconfigs
 
 import (
@@ -20,6 +23,12 @@ const (
 	EnvToken      = "OCI_TOKEN"
 	EnvCacheDir   = "OCI_CACHE_DIR"
 	EnvMaxAge     = "OCI_MAX_AGE"
+
+	// EnvVerifySigStoreKeyPath and the following constants are env vars read by SigstoreVerifierFromEnv.
+	EnvVerifySigStoreKeyPath      = "OCI_VERIFY_SIGSTORE_KEY"
+	EnvVerifySigStoreCertIdentity = "OCI_VERIFY_SIGSTORE_CERT_IDENTITY"
+	EnvVerifySigStoreCertIssuer   = "OCI_VERIFY_SIGSTORE_CERT_ISSUER"
+	EnvVerifySigStoreRequireRekor = "OCI_VERIFY_SIGSTORE_REQUIRE_REKOR"
 )
 
 // FileSpec maps a logical name to a file stored in an OCI artifact.
@@ -56,6 +65,10 @@ type Config struct {
 	// Logger receives structured log output. May be nil.
 	Logger *slog.Logger
 
+	// Verifier is called after every successful download to validate artifact
+	// signatures. If nil, no signature verification is performed.
+	Verifier ArtifactVerifier
+
 	// auth fields set via functional options; not exported to avoid leaking secrets.
 	username string
 	password string
@@ -82,6 +95,7 @@ func WithOverride(name, path string) Option {
 		if c.Overrides == nil {
 			c.Overrides = make(map[string]string)
 		}
+
 		c.Overrides[name] = path
 	}
 }
@@ -116,6 +130,7 @@ func (c *Config) applyDefaults() error {
 	if c.MaxAge == 0 {
 		c.MaxAge = defaultMaxAge
 	}
+
 	if c.CacheDir == "" {
 		if env := os.Getenv(EnvCacheDir); env != "" {
 			c.CacheDir = env
@@ -124,26 +139,32 @@ func (c *Config) applyDefaults() error {
 			if err != nil {
 				return fmt.Errorf("resolving cache directory: %w", err)
 			}
+
 			c.CacheDir = filepath.Join(base, "oci-configs")
 		}
 	}
+
 	return nil
 }
 
 // validate checks that required fields are present.
 func (c *Config) validate() error {
 	if c.Registry == "" {
-		return fmt.Errorf("registry is required")
+		return ErrRegistryRequired
 	}
+
 	if c.Repository == "" {
-		return fmt.Errorf("repository is required")
+		return ErrRepositoryRequired
 	}
+
 	if c.Tag == "" {
-		return fmt.Errorf("tag is required")
+		return ErrTagRequired
 	}
+
 	if len(c.Files) == 0 {
-		return fmt.Errorf("at least one FileSpec is required")
+		return ErrFilesRequired
 	}
+
 	return nil
 }
 
@@ -162,7 +183,17 @@ func FromEnv(files []FileSpec, opts ...Option) (*Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s %q: %w", EnvMaxAge, raw, err)
 		}
+
 		cfg.MaxAge = d
+	}
+
+	// Wire sigstore verification when at least one meaningful env var is set.
+	// OCI_VERIFY_SIGSTORE_REQUIRE_REKOR alone is not sufficient — it is a
+	// modifier, not a selector.
+	if os.Getenv(EnvVerifySigStoreKeyPath) != "" ||
+		os.Getenv(EnvVerifySigStoreCertIdentity) != "" ||
+		os.Getenv(EnvVerifySigStoreCertIssuer) != "" {
+		cfg.Verifier = SigstoreVerifierFromEnv()
 	}
 
 	for _, opt := range opts {

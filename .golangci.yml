@@ -1,22 +1,30 @@
 version: "2"
-
 linters:
-  default: none
-  enable:
-    - bodyclose    # verifies HTTP response bodies are closed
-    - errcheck     # checks error return values are handled
-    - exhaustive   # checks exhaustiveness of enum switches
-    - govet        # reports suspicious constructs
-    - ineffassign  # detects ineffectual assignments
-    - misspell     # finds commonly misspelled words
-    - nolintlint   # ensures nolint directives are specific and necessary
-    - prealloc     # suggests slice preallocation where possible
-    - revive       # general Go style and correctness
-    - staticcheck  # comprehensive static analysis (includes gosimple, stylecheck)
-    - unconvert    # removes unnecessary type conversions
-    - unparam      # reports unused function parameters
-    - unused       # checks for unused code
-
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - gomodguard
+    - mnd
+    - noinlineerr
+    - tagliatelle
+    - testableexamples
+    - testpackage
+    - varnamelen
+    - wsl
+  exclusions:
+    rules:
+      # Exclude some linters on test code
+      - path: _test\.go
+        linters:
+          - dupl
+          - err113
+          - errcheck
+          - errchkjson
+          - gochecknoglobals
+          - goconst
+          - gocyclo
+          - varnamelen
   settings:
     exhaustive:
       default-signifies-exhaustive: true
@@ -36,13 +44,6 @@ linters:
         - name: time-naming
         - name: unexported-return
         - name: var-naming
-
-  exclusions:
-    rules:
-      - path: _test\.go
-        linters:
-          - unparam  # test helpers often have fixed injectable signatures
-
 formatters:
   enable:
     - gofmt

@@ -9,6 +9,8 @@ import (
 )
 
 func TestCacheManagerIsStaleNoManifest(t *testing.T) {
+	t.Parallel()
+
 	cm := &cacheManager{dir: t.TempDir()}
 	if !cm.isStale(time.Hour) {
 		t.Fatal("expected stale when no manifest exists")
@@ -16,22 +18,32 @@ func TestCacheManagerIsStaleNoManifest(t *testing.T) {
 }
 
 func TestCacheManagerIsStaleAfterWrite(t *testing.T) {
+	t.Parallel()
+
 	cm := &cacheManager{dir: t.TempDir()}
-	if err := cm.writeManifest("sha256:abc"); err != nil {
+
+	err := cm.writeManifest("sha256:abc", "")
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	if cm.isStale(time.Hour) {
 		t.Fatal("expected fresh immediately after write")
 	}
 }
 
 func TestCacheManagerIsStaleExpired(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	cm := &cacheManager{dir: dir}
 
 	past := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+
 	rec := `{"digest":"sha256:abc","cached_at":"` + past + `"}`
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(rec), 0o600); err != nil {
+
+	err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(rec), 0o600)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -41,6 +53,8 @@ func TestCacheManagerIsStaleExpired(t *testing.T) {
 }
 
 func TestCacheManagerDigestRoundtrip(t *testing.T) {
+	t.Parallel()
+
 	cm := &cacheManager{dir: t.TempDir()}
 
 	if got := cm.digest(); got != "" {
@@ -48,15 +62,20 @@ func TestCacheManagerDigestRoundtrip(t *testing.T) {
 	}
 
 	const want = "sha256:deadbeef"
-	if err := cm.writeManifest(want); err != nil {
+
+	err := cm.writeManifest(want, "")
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	if got := cm.digest(); got != want {
 		t.Fatalf("digest() = %q, want %q", got, want)
 	}
 }
 
 func TestCacheManagerOpenFile(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	cm := &cacheManager{dir: dir}
 
@@ -69,18 +88,22 @@ func TestCacheManagerOpenFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer func() { _ = rc.Close() }()
 
 	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if string(got) != content {
 		t.Fatalf("got %q, want %q", got, content)
 	}
 }
 
 func TestCacheManagerAllFilesCached(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	cm := &cacheManager{dir: dir}
 
@@ -94,7 +117,8 @@ func TestCacheManagerAllFilesCached(t *testing.T) {
 	}
 
 	for _, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, f.Path), []byte("x"), 0o600); err != nil {
+		err := os.WriteFile(filepath.Join(dir, f.Path), []byte("x"), 0o600)
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -105,6 +129,8 @@ func TestCacheManagerAllFilesCached(t *testing.T) {
 }
 
 func TestCacheManagerHasFile(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	cm := &cacheManager{dir: dir}
 
@@ -112,17 +138,23 @@ func TestCacheManagerHasFile(t *testing.T) {
 		t.Fatal("expected false for absent file")
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "present.txt"), []byte("hi"), 0o600); err != nil {
+	err := os.WriteFile(filepath.Join(dir, "present.txt"), []byte("hi"), 0o600)
+	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !cm.hasFile("present.txt") {
 		t.Fatal("expected true for present file")
 	}
 }
 
 func TestNewCacheManagerKeyEncoding(t *testing.T) {
+	t.Parallel()
+
 	cm1 := newCacheManager("/cache", "registry.example.com", "org/repo", "latest")
+
 	cm2 := newCacheManager("/cache", "registry.example.com", "org/repo", "v1.0")
+
 	if cm1.dir == cm2.dir {
 		t.Fatal("different tags must produce different cache dirs")
 	}

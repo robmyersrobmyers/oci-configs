@@ -17,6 +17,7 @@ streaming access suitable for large files.
 - [Progress and logging](#progress-and-logging)
 - [Cache behaviour](#cache-behaviour)
 - [Testing](#testing)
+- [Signature Verification](#signature-verification)
 - [Demo CLI](#demo-cli)
 
 ---
@@ -27,14 +28,19 @@ The library pulls files from an OCI artifact registry (using
 [ORAS](https://oras.land)), stores them in a local disk cache, and serves them
 as `io.ReadCloser` streams. On every application start:
 
-1. If the cache is **fresh** (younger than `MaxAge`), files are served from disk
-   with no network activity.
-2. If the cache is **stale**, the remote manifest digest is fetched. If the
-   digest is unchanged the cache timestamp is refreshed; if it changed the files
-   are re-downloaded.
+1. If the cache is **fresh** (younger than `MaxAge`), all files are present, and
+   either no verifier is configured or the current digest has already been
+   verified, files are served from disk with no network activity.
+2. If the cache is **stale** (or fresh but unverified), the remote manifest
+   digest is fetched. If the digest is unchanged the cache timestamp is
+   refreshed; if it changed the files are re-downloaded.
 3. If the **network is unavailable** but cached files exist, a warning is logged
    and the stale cache is used (`ErrStaleCacheUsed`).
 4. If the network is unavailable and **no cache exists**, an error is returned.
+5. If **signature verification is enabled** and the signature cannot be
+   validated, `ErrVerificationFailed` is returned. This applies both after a
+   fresh download and when verifying a previously-cached artifact whose digest
+   has not yet been verified.
 
 Per-file **local overrides** let application users substitute their own copies
 of any file via a command-line flag, bypassing the cache entirely.
@@ -115,7 +121,11 @@ client, err := ociconfigs.FromEnv(files,
 ```
 
 `FromEnv` reads `OCI_REGISTRY`, `OCI_REPOSITORY`, `OCI_TAG`, `OCI_USERNAME`,
-`OCI_PASSWORD`, `OCI_TOKEN`, `OCI_CACHE_DIR`, and `OCI_MAX_AGE`.
+`OCI_PASSWORD`, `OCI_TOKEN`, `OCI_CACHE_DIR`, `OCI_MAX_AGE`, and the four
+`OCI_VERIFY_SIGSTORE_*` variables. Signature verification is enabled
+automatically when at least one of `OCI_VERIFY_SIGSTORE_KEY`,
+`OCI_VERIFY_SIGSTORE_CERT_IDENTITY`, or `OCI_VERIFY_SIGSTORE_CERT_ISSUER` is
+set.
 
 ---
 
@@ -184,6 +194,18 @@ echo "$PASS" | oras login registry.example.com -u myuser --password-stdin
 | `Path`      | `string` | File name in the OCI artifact, e.g. `"schema.gql"` |
 | `MediaType` | `string` | OCI media type, e.g. `"application/json"` |
 
+### `SigstoreVerifier` struct
+
+| Field | Type | Description |
+|---|---|---|
+| `KeyPath` | `string` | Path to a PEM-encoded ECDSA or Ed25519 public key. Mutually exclusive with `CertIdentity`/`CertOIDCIssuer`. |
+| `CertIdentity` | `string` | Expected SAN in the Fulcio signing certificate (keyless). Must pair with `CertOIDCIssuer`. |
+| `CertOIDCIssuer` | `string` |  Expected OIDC issuer URL for keyless verification. |
+| `RequireRekor` | `bool` | `false` | Require a Rekor transparency-log inclusion proof. |
+| `RegistryUsername` | `string` |  Username for fetching signature bundles. Falls back to `OCI_USERNAME`. |
+| `RegistryPassword` | `string` |  Password for fetching signature bundles. Falls back to `OCI_PASSWORD`. |
+| `RegistryToken` | `string` |  Bearer token for fetching signature bundles. Falls back to `OCI_TOKEN`. |
+
 ### Environment variables
 
 | Variable       | Equivalent option / field | Example |
@@ -196,6 +218,10 @@ echo "$PASS" | oras login registry.example.com -u myuser --password-stdin
 | `OCI_TOKEN`      | `WithToken`             | `ghp_abc...` |
 | `OCI_CACHE_DIR`  | `WithCacheDir`          | `/var/cache/myapp` |
 | `OCI_MAX_AGE`    | `WithMaxAge`            | `48h` |
+| `OCI_VERIFY_SIGSTORE_KEY` | `SigstoreVerifier.KeyPath` | `/etc/keys/cosign.pub` |
+| `OCI_VERIFY_SIGSTORE_CERT_IDENTITY` | `SigstoreVerifier.CertIdentity` | `https://github.com/myorg/myrepo/.github/workflows/release.yml@refs/heads/main` |
+| `OCI_VERIFY_SIGSTORE_CERT_ISSUER` | `SigstoreVerifier.CertOIDCIssuer` | `https://token.actions.githubusercontent.com` |
+| `OCI_VERIFY_SIGSTORE_REQUIRE_REKOR` | `SigstoreVerifier.RequireRekor` | `true` |
 
 Functional options passed to `New` or `FromEnv` take priority over environment
 variables.
@@ -210,6 +236,7 @@ ociconfigs.WithToken("ghp_abc123")
 ociconfigs.WithOverride("schema", "/local/schema.gql")
 ociconfigs.WithProgress(myProgressFunc)
 ociconfigs.WithLogger(slog.Default())
+ociconfigs.WithVerifier(&ociconfigs.SigstoreVerifier{KeyPath: "/etc/keys/cosign.pub"})
 ```
 
 ---
@@ -339,14 +366,20 @@ The cache directory key is derived from `registry/repository:tag` with `/` and
 
 ```
 Prefetch():
-  if cache is fresh (cached_at + MaxAge > now) and all files present
+  if cache is fresh AND all files present AND (no verifier OR digest verified)
     → return immediately (no network)
   else
     fetch remote manifest digest (HEAD request, minimal bandwidth)
     if network error and files cached → log warning, return ErrStaleCacheUsed
     if network error and no cache   → return ErrNoCache (wrapping the cause)
-    if remote digest == cached digest → update cached_at, return
-    if remote digest differs         → re-download all files
+    if remote digest == cached digest
+      if verifier configured AND digest not yet verified
+        → verify signature; on failure return ErrVerificationFailed
+      → update cached_at, return
+    if remote digest differs
+      → re-download all files
+      → if verifier configured: verify signature; on failure return ErrVerificationFailed
+      → update cache with verified_digest
 ```
 
 ### Inspecting the cache
@@ -380,16 +413,81 @@ client.fetchDigest = func(ctx context.Context, cfg Config) (string, error) {
     return "sha256:abc", nil
 }
 client.download = func(ctx context.Context, cfg Config, cm *cacheManager) error {
-    return cm.writeManifest("sha256:abc")
+    return cm.writeManifest("sha256:abc", "")
 }
 ```
 
-Integration tests that hit a real registry require the `integration` build tag
-and the `OCI_*` environment variables to be set:
+Signature verification is also injectable: `ArtifactVerifier` is an interface
+with a single `Verify` method, so any struct that implements it can stand in for
+a real `SigstoreVerifier`:
 
-```sh
-go test -tags integration ./...
+```go
+type stubVerifier struct{ err error }
+
+func (s *stubVerifier) Verify(_ context.Context, _, _, _ string) error { return s.err }
+
+client.cfg.Verifier = &stubVerifier{} // passes verification
+
+client.cfg.Verifier = &stubVerifier{err: errors.New("bad signature")} // fails verification
 ```
+
+---
+
+## Signature Verification
+
+Signatures stored using the OCI Referrers API can be optionally verified using [Sigstore](https://www.sigstore.dev).
+Verification runs after each download; the local cache is not updated if the signature is invalid.
+
+Pass a `SigstoreVerifier` via `WithVerifier`:
+
+```go
+client, err := ociconfigs.New(cfg,
+    ociconfigs.WithVerifier(&ociconfigs.SigstoreVerifier{
+        KeyPath: "/etc/keys/cosign.pub",
+    }),
+)
+```
+
+### Key-based
+
+Key based verification is recommended for private or airgapped registries.
+
+```go
+ociconfigs.WithVerifier(&ociconfigs.SigstoreVerifier{
+    KeyPath: "/etc/keys/cosign.pub",
+})
+```
+
+Contacts only the OCI registry — no Rekor, no Fulcio, no TUF network access required.
+
+### Keyless
+
+Keyless verification requires an OIDC issuer like GitHub Actions, Google Workload Identity, etc.
+
+```go
+ociconfigs.WithVerifier(&ociconfigs.SigstoreVerifier{
+    CertIdentity:   "https://github.com/myorg/myrepo/.github/workflows/release.yml@refs/heads/main",
+    CertOIDCIssuer: "https://token.actions.githubusercontent.com",
+    RequireRekor:   true,
+})
+```
+
+Requires outbound access to TUF mirrors. With `RequireRekor: true`, a Rekor inclusion proof provides a durable timestamp independent of the short-lived Fulcio certificate.
+
+### Configuration via environment variables
+
+```go
+ociconfigs.WithVerifier(ociconfigs.SigstoreVerifierFromEnv())
+```
+
+| Variable | Purpose |
+|---|---|
+| `OCI_VERIFY_SIGSTORE_KEY` | Path to PEM-encoded _public_ key (key-based) |
+| `OCI_VERIFY_SIGSTORE_CERT_IDENTITY` | Fulcio certificate SAN (keyless) |
+| `OCI_VERIFY_SIGSTORE_CERT_ISSUER` | OIDC issuer URL (keyless) |
+| `OCI_VERIFY_SIGSTORE_REQUIRE_REKOR` | Require Rekor inclusion proof (`true`/`1`/`yes`) |
+
+Signature bundles are fetched using the same `OCI_USERNAME`, `OCI_PASSWORD`, and `OCI_TOKEN` variables as the rest of the library.
 
 ---
 
@@ -411,6 +509,15 @@ export OCI_PASSWORD=mypass
 # Download all files
 oci-configs pull
 
+# Download and verify signature with a PEM public key (key-based)
+oci-configs pull --verify-key=/etc/keys/cosign.pub
+
+# Download and verify signature with a keyless identity (GitHub Actions)
+oci-configs pull \
+  --verify-cert-identity=https://github.com/myorg/myrepo/.github/workflows/release.yml@refs/heads/main \
+  --verify-cert-issuer=https://token.actions.githubusercontent.com \
+  --verify-require-rekor
+
 # Stream a file to stdout
 oci-configs get --name=schema > schema.gql
 
@@ -421,3 +528,6 @@ oci-configs get --name=config --override-config=/local/config.yaml
 oci-configs cache-info
 oci-configs cache-info --json
 ```
+
+Verification flags can also be supplied via environment variables — see
+[Signature Verification](#configuration-via-environment-variables) for the full list.

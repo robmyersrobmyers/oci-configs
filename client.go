@@ -2,6 +2,7 @@ package ociconfigs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,13 +27,19 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	if err := cfg.applyDefaults(); err != nil {
+
+	err := cfg.applyDefaults()
+	if err != nil {
 		return nil, err
 	}
-	if err := cfg.validate(); err != nil {
+
+	err = cfg.validate()
+	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+
 	cm := newCacheManager(cfg.CacheDir, cfg.Registry, cfg.Repository, cfg.Tag)
+
 	return &Client{
 		cfg:         cfg,
 		cm:          cm,
@@ -51,23 +58,19 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 //     and ErrStaleCacheUsed is returned (non-fatal).
 //   - If the network is unavailable and no cache exists, an error is returned.
 func (c *Client) Prefetch(ctx context.Context) error {
-	if !c.cm.isStale(c.cfg.MaxAge) && c.cm.allFilesCached(c.cfg.Files) {
+	if c.freshCacheValid() {
 		c.logDebug("cache is fresh, skipping network check")
+
 		return nil
 	}
 
 	remoteDigest, err := c.fetchDigest(ctx, c.cfg)
 	if err != nil {
-		if c.cm.allFilesCached(c.cfg.Files) {
-			c.logWarn("remote check failed; using stale cache", "err", err)
-			return ErrStaleCacheUsed
-		}
-		return fmt.Errorf("%w: %w", ErrNoCache, err)
+		return c.handleNetworkError(err)
 	}
 
 	if remoteDigest == c.cm.digest() && c.cm.allFilesCached(c.cfg.Files) {
-		c.logDebug("digest unchanged, refreshing cache timestamp")
-		return c.cm.writeManifest(remoteDigest)
+		return c.handleDigestUnchanged(ctx, remoteDigest)
 	}
 
 	c.logInfo("downloading artifact",
@@ -75,6 +78,7 @@ func (c *Client) Prefetch(ctx context.Context) error {
 		"repository", c.cfg.Repository,
 		"tag", c.cfg.Tag,
 	)
+
 	return c.download(ctx, c.cfg, c.cm)
 }
 
@@ -89,10 +93,11 @@ func (c *Client) Prefetch(ctx context.Context) error {
 //  3. If no cache exists, Prefetch is called; errors are returned directly.
 func (c *Client) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 	if path, ok := c.cfg.Overrides[name]; ok {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // override paths are user-supplied by design
 		if err != nil {
 			return nil, fmt.Errorf("opening override for %q: %w", name, err)
 		}
+
 		return f, nil
 	}
 
@@ -103,7 +108,8 @@ func (c *Client) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 
 	needsDownload := !c.cm.hasFile(spec.Path)
 	if needsDownload || c.cm.isStale(c.cfg.MaxAge) {
-		if prefetchErr := c.Prefetch(ctx); prefetchErr != nil && prefetchErr != ErrStaleCacheUsed {
+		prefetchErr := c.Prefetch(ctx)
+		if prefetchErr != nil && !errors.Is(prefetchErr, ErrStaleCacheUsed) {
 			return nil, prefetchErr
 		}
 	}
@@ -112,23 +118,24 @@ func (c *Client) Get(ctx context.Context, name string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening cached file for %q: %w", name, err)
 	}
+
 	return rc, nil
 }
 
 // CacheEntry describes a single cached file.
 type CacheEntry struct {
-	Name string
-	Path string
-	Size int64
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // CacheStatus holds the result of CacheInfo.
 type CacheStatus struct {
-	CacheDir string
-	Digest   string
-	CachedAt time.Time
-	Fresh    bool
-	Files    []CacheEntry
+	CacheDir string       `json:"cache_dir"`
+	Digest   string       `json:"digest"`
+	CachedAt time.Time    `json:"cached_at"`
+	Fresh    bool         `json:"fresh"`
+	Files    []CacheEntry `json:"files"`
 }
 
 // CacheInfo returns the current state of the local cache without making any
@@ -145,10 +152,12 @@ func (c *Client) CacheInfo() (CacheStatus, error) {
 
 	for _, f := range c.cfg.Files {
 		entry := CacheEntry{Name: f.Name, Path: f.Path}
+
 		info, statErr := os.Stat(c.cm.filePath(f.Path))
 		if statErr == nil {
 			entry.Size = info.Size()
 		}
+
 		status.Files = append(status.Files, entry)
 	}
 
@@ -159,12 +168,73 @@ func (c *Client) CacheInfo() (CacheStatus, error) {
 // included for future compatibility.
 func (c *Client) Close() error { return nil }
 
+// freshCacheValid reports whether the cache is current enough to skip the
+// network entirely. Returns false when stale, files are missing, or a verifier
+// is configured but the current artifact has not yet been verified.
+func (c *Client) freshCacheValid() bool {
+	if c.cm.isStale(c.cfg.MaxAge) || !c.cm.allFilesCached(c.cfg.Files) {
+		return false
+	}
+
+	return c.cfg.Verifier == nil || c.cm.isVerified()
+}
+
+// handleNetworkError converts a digest-fetch failure into the appropriate
+// return value: ErrStaleCacheUsed when cached files exist, or a wrapped
+// ErrNoCache when there is nothing to fall back to.
+func (c *Client) handleNetworkError(err error) error {
+	if c.cm.allFilesCached(c.cfg.Files) {
+		c.logWarn("remote check failed; using stale cache", "err", err)
+
+		return ErrStaleCacheUsed
+	}
+
+	return fmt.Errorf("%w: %w", ErrNoCache, err)
+}
+
+// handleDigestUnchanged handles the path where the remote digest matches the
+// cached digest. It runs verification when a verifier is configured and the
+// current digest has not been verified before, then refreshes the timestamp.
+func (c *Client) handleDigestUnchanged(ctx context.Context, remoteDigest string) error {
+	if c.cfg.Verifier != nil && c.cm.verifiedDigest() != remoteDigest {
+		c.logDebug("verifying artifact signature",
+			"registry", c.cfg.Registry,
+			"repository", c.cfg.Repository,
+			"digest", remoteDigest,
+		)
+
+		if err := c.cfg.Verifier.Verify(ctx, c.cfg.Registry, c.cfg.Repository, remoteDigest); err != nil {
+			c.logWarn("artifact signature verification failed",
+				"registry", c.cfg.Registry,
+				"repository", c.cfg.Repository,
+				"digest", remoteDigest,
+				"err", err,
+			)
+
+			return fmt.Errorf("%w: %w", ErrVerificationFailed, err)
+		}
+
+		c.logInfo("artifact signature verified",
+			"registry", c.cfg.Registry,
+			"repository", c.cfg.Repository,
+			"digest", remoteDigest,
+		)
+
+		return c.cm.writeManifest(remoteDigest, remoteDigest)
+	}
+
+	c.logDebug("digest unchanged, refreshing cache timestamp")
+
+	return c.cm.writeManifest(remoteDigest, c.cm.verifiedDigest())
+}
+
 func (c *Client) fileSpec(name string) (FileSpec, error) {
 	for _, f := range c.cfg.Files {
 		if f.Name == name {
 			return f, nil
 		}
 	}
+
 	return FileSpec{}, fmt.Errorf("%w: %q", ErrNotFound, name)
 }
 
@@ -188,8 +258,8 @@ func (c *Client) logDebug(msg string, args ...any) {
 
 // compile-time interface check.
 var _ interface {
-	Prefetch(context.Context) error
-	Get(context.Context, string) (io.ReadCloser, error)
+	Prefetch(ctx context.Context) error
+	Get(ctx context.Context, name string) (io.ReadCloser, error)
 	CacheInfo() (CacheStatus, error)
 	Close() error
 } = (*Client)(nil)
